@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Local tooling
+.claude/
+.DS_Store
+
+# BLE captures and app screenshots. PacketLogger traces include the phone's
+# model/firmware and nearby devices' Bluetooth addresses: never publish them.
+*.pklg
+full log*.txt
+IMG_*.PNG
+
+# Local working notes
+CAPTURE_GUIDE.md

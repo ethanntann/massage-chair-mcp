@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "osim-udiva3-mcp"
+version = "0.2.0"
+description = "MCP server that controls an OSIM uDiva3 massage chair over Bluetooth LE"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # FastMCP 1.x API (lifespan context, @mcp.tool). 2.x is a major release; not yet tested.
+    "mcp>=1.27,<2",
+    "bleak>=3.0,<4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=1.0", "ruff>=0.12"]
+
+[project.scripts]
+osim-udiva3-mcp = "server:main"
+
+[tool.setuptools]
+py-modules = ["protocol", "udiva_driver", "custom_presets", "server", "run_routine", "scan"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+# Raised inside the mcp package itself, not by this project.
+filterwarnings = ["ignore::UserWarning:pydantic_settings.*"]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "BLE", "RUF"]
+ignore = [
+    "RUF001",  # en dash / arrows in user-facing strings are intentional
+    "RUF002",
+    "RUF003",
+    "ASYNC109",  # `timeout` args are telemetry-loop deadlines, not cancellation scopes
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Shutdown/cleanup paths deliberately catch everything so one failure can't block the rest.
+"server.py" = ["BLE001"]
+"run_routine.py" = ["BLE001"]
+"udiva_driver.py" = ["BLE001"]
+"custom_presets.py" = ["BLE001"]
+"tests/*" = ["B011"]
