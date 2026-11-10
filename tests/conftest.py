@@ -132,6 +132,11 @@ class FakeChair:
         self.rolling_level = 0
         self.block = asyncio.Event()  # set_* waits on this if `hold` is True
         self.hold = False
+        self.max_massage_minutes = 120
+        self.elapsed: float | None = None
+
+    def massage_elapsed(self):
+        return self.elapsed
 
     async def _do(self, name: str, *args) -> bool:
         self.calls.append((name, *args))
@@ -149,6 +154,7 @@ class FakeChair:
 
     async def stop(self):
         self.calls.append(("stop",))
+        self.elapsed = None
         self.tapping = self.kneading = False
         return True
 

@@ -34,6 +34,7 @@ from udiva_driver import ChairError, ChairNotFoundError, OperationInterrupted, U
 log = logging.getLogger("osim-udiva3")
 
 SOFA_ON_SHUTDOWN_TIMEOUT = 40.0
+WATCHDOG_INTERVAL = 15.0  # how often the massage time limit is checked
 
 RollingLevel = Literal["off", "partial", "full"]
 LegLevel = Literal["off", "low", "high"]
@@ -47,6 +48,7 @@ class ChairSession:
     routine_task: asyncio.Task[str] | None = None
     routine_name: str = ""
     last_routine_result: str = ""
+    last_auto_stop: str = ""
 
     @property
     def routine_running(self) -> bool:
@@ -69,12 +71,43 @@ async def _cancel_routine(s: ChairSession) -> None:
     s.routine_name = ""
 
 
+async def enforce_time_limit(s: ChairSession) -> bool:
+    """Stop the chair if the current massage has run past its limit.
+
+    A hard cap rather than an idle timeout: a factory program runs for a long
+    time with no tool calls, and that's normal. Returns True if it stopped.
+    """
+    elapsed = s.chair.massage_elapsed()
+    limit_min = s.chair.max_massage_minutes
+    if elapsed is None or elapsed < limit_min * 60:
+        return False
+    log.warning("Massage reached the %d-minute limit; stopping the chair", limit_min)
+    await _cancel_routine(s)
+    if s.chair.connected:
+        await s.chair.stop()
+    s.last_auto_stop = (
+        f"Stopped automatically after {elapsed / 60:.0f} minutes (limit: {limit_min} minutes)."
+    )
+    return True
+
+
+async def _watchdog(s: ChairSession) -> None:
+    while True:
+        await asyncio.sleep(WATCHDOG_INTERVAL)
+        try:
+            await enforce_time_limit(s)
+        except Exception:
+            log.exception("Time-limit check failed; will retry")
+
+
 @asynccontextmanager
 async def lifespan(_server: FastMCP) -> AsyncIterator[ChairSession]:
     session = ChairSession(chair=UDivaDriver())
+    watchdog = asyncio.create_task(_watchdog(session), name="massage-time-limit")
     try:
         yield session
     finally:
+        watchdog.cancel()
         # Leave the chair resting: stop any routine, return to sofa, then
         # disconnect. Each step is bounded so shutdown can't hang.
         try:
@@ -116,6 +149,10 @@ return_to_sofa when the user is finished / leaving the chair (then optionally
 disconnect_chair). disconnect_chair and server shutdown leave the chair resting
 on their own. The OSIM phone app must be disconnected first — the chair allows
 only one Bluetooth connection at a time.
+
+TIME LIMIT: for safety the server stops any massage automatically once it has
+run for a set time (get_status shows the minutes so far and the limit; default
+120). If that happens and the user wants more, just start a new one.
 """
 
 mcp = FastMCP("osim-udiva3", lifespan=lifespan, instructions=INSTRUCTIONS)
@@ -277,6 +314,8 @@ async def get_status(ctx: Context) -> str:
     st["custom_routine"] = s.routine_name if s.routine_running else "none"
     if s.last_routine_result and not s.routine_running:
         st["last_routine_result"] = s.last_routine_result
+    if s.last_auto_stop and s.chair.massage_elapsed() is None:
+        st["last_auto_stop"] = s.last_auto_stop
     return "Chair status:\n" + "\n".join(f"{k}: {v}" for k, v in st.items())
 
 

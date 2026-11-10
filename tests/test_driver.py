@@ -220,3 +220,34 @@ async def test_address_pin_takes_priority(fake_ble, monkeypatch, tmp_path):
     with pytest.raises(drv.ChairNotFoundError, match="PINNED"):
         await drv.UDivaDriver().connect()
     assert seen == ["PINNED"]
+
+
+def test_config_massage_limit(tmp_path):
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text('{"max_massage_minutes": 45}')
+    assert drv.load_config(cfg)["max_massage_minutes"] == 45
+    for bad in ("5", "1000", '"60"', "true"):
+        cfg.write_text(f'{{"max_massage_minutes": {bad}}}')
+        assert "max_massage_minutes" not in drv.load_config(cfg)
+
+
+async def test_massage_clock_starts_and_stops(chair, fake_ble, monkeypatch):
+    async def recline(self, timeout=30.0):
+        return True
+
+    monkeypatch.setattr(drv.UDivaDriver, "_recline", recline)
+    fake_ble.responder = staticmethod(
+        lambda cmd: frame(echo=cmd[1], program=0x34) if cmd[0] == 0xC5 else None
+    )
+    assert chair.massage_elapsed() is None
+    assert await chair.start_preset("spa")
+    assert 0 <= chair.massage_elapsed() < 5
+    assert chair.status()["auto_stop_after_minutes"] == drv.DEFAULT_MAX_MASSAGE_MINUTES
+    await chair.stop()
+    assert chair.massage_elapsed() is None
+
+
+async def test_massage_clock_cleared_on_disconnect(chair, fake_ble):
+    chair._mark_massage_started()
+    fake_ble.instances[-1].drop()
+    assert chair.massage_elapsed() is None

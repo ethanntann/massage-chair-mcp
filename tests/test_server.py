@@ -157,3 +157,31 @@ async def test_save_rejects_oversized_and_injected_text(ctx):
     assert "at most" in await server.save_custom_preset(ctx, "x", big)
     msg = await server.save_custom_preset(ctx, "x", '[{"action":"stop"}]', "d" * 1000)
     assert msg.startswith("Invalid description")
+
+
+# -- massage time limit ----------------------------------------------------------
+async def test_time_limit_not_reached_does_nothing(session):
+    session.chair.elapsed = 119 * 60  # a long factory program is fine
+    assert not await server.enforce_time_limit(session)
+    session.chair.elapsed = None
+    assert not await server.enforce_time_limit(session)
+    assert ("stop",) not in session.chair.calls
+
+
+async def test_time_limit_stops_chair_and_routine(ctx, session):
+    await _start_long_routine(ctx, session)
+    session.chair.elapsed = 121 * 60
+    assert await server.enforce_time_limit(session)
+    assert not session.routine_running
+    assert session.chair.calls[-1] == ("stop",)
+    status = await server.get_status(ctx)
+    assert "last_auto_stop: Stopped automatically after 121 minutes (limit: 120 minutes)." in status
+
+
+async def test_watchdog_runs_in_background(session, monkeypatch):
+    monkeypatch.setattr(server, "WATCHDOG_INTERVAL", 0.01)
+    session.chair.elapsed = 10_000
+    task = asyncio.create_task(server._watchdog(session))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    assert ("stop",) in session.chair.calls

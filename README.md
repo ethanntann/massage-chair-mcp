@@ -76,7 +76,7 @@ That meant solving three problems:
 | Source material | 4 PacketLogger captures of the OSIM app (~24,000 log lines), one action at a time, cross-referenced with app screens |
 | Tools exposed | 25 (presets, manual techniques, seat positions, custom routines, status) |
 | Built-in routines | 5 multi-step routines (desk neck relief, full back descent, wind down, leg focus, manual test) |
-| Tests | 97, offline, against a simulated chair (`pytest`), on every push (CI) |
+| Tests | 103, offline, against a simulated chair (`pytest`), on every push (CI) |
 
 ## Key decisions
 
@@ -109,11 +109,17 @@ That meant solving three problems:
 The tools move a chair that someone is sitting in, and the agent calling them
 may have read untrusted text. So:
 
+- **A time limit on every massage.** The server stops the chair once a massage
+  has run for 2 hours (configurable, 10 to 240 minutes). It's a hard cap rather
+  than an idle timeout, because a factory program normally runs for a long
+  time with no tool calls; the cap is what stops a forgotten session.
 - **Bounded routines.** At most 100 steps, 30 minutes per wait and 90 minutes
   in total. Names and descriptions, which are shown back to the agent later,
   are length-limited and can't contain control characters.
 - **Clear tool annotations.** Read-only tools are marked read-only, so a client
-  can auto-approve those and ask the user before anything that moves the chair.
+  can tell them apart from tools that move the chair. By default the agent
+  runs the chair without a confirmation prompt, which is the point; a client
+  can be set to ask before actuating tools if you prefer.
 - **The right chair.** A config file can pin the chair's Bluetooth address, so
   a nearby device spoofing its name can't be picked up.
 - **Local only.** The server speaks MCP over stdio; there is no network
@@ -161,7 +167,8 @@ restart Claude Desktop and ask for a massage. To try things without an agent:
 ```
 
 Optional `~/.udiva_config.json`: `{"address": "..."}` to pin the chair,
-`{"name": "OS8211 ..."}` for an exact name, or `{"prefixes": [...]}`.
+`{"name": "OS8211 ..."}` for an exact name, or `{"prefixes": [...]}`, and
+`{"max_massage_minutes": 120}` to change the time limit.
 Custom routines are saved to `~/.udiva_presets.json`.
 
 ## Limitations
@@ -196,6 +203,6 @@ custom_presets.py    routine schema, validation, storage, runner
 server.py            MCP server and tools
 run_routine.py       command-line runner (no MCP)
 scan.py              list nearby BLE devices
-tests/               simulated chair + 97 tests
+tests/               simulated chair + 103 tests
 docs/protocol.md     how the protocol was reverse-engineered
 ```

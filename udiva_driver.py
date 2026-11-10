@@ -86,6 +86,12 @@ DEFAULT_NAME_PREFIXES = ["OS8211", "OSIM", "uDiva"]
 CONFIG_PATH = Path.home() / ".udiva_config.json"
 SCAN_TIMEOUT = 10.0
 
+# Safety cap on one continuous massage; the MCP server stops the chair when it
+# is reached. Long enough for any factory program or custom routine (at most
+# 90 min of waits), configurable as "max_massage_minutes" in the config file.
+DEFAULT_MAX_MASSAGE_MINUTES = 120
+MAX_MASSAGE_MINUTES_RANGE = (10, 240)
+
 # -- Timing ------------------------------------------------------------------
 HEARTBEAT_INTERVAL = 0.7
 HANDSHAKE_GAP = 0.3  # protocol pacing between handshake packets
@@ -159,6 +165,13 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
             cfg["prefixes"] = [p.strip() for p in prefixes]
         else:
             log.warning("Ignoring config 'prefixes': expected a list of strings, 3+ chars each")
+    limit = data.get("max_massage_minutes")
+    if limit is not None:
+        lo, hi = MAX_MASSAGE_MINUTES_RANGE
+        if isinstance(limit, int) and not isinstance(limit, bool) and lo <= limit <= hi:
+            cfg["max_massage_minutes"] = limit
+        else:
+            log.warning("Ignoring config 'max_massage_minutes': expected an integer %d-%d", lo, hi)
     return cfg
 
 
@@ -189,6 +202,7 @@ class UDivaDriver:
         self._address: str | None = cfg.get("address")
         self._name: str | None = name or cfg.get("name")
         self._prefixes: list[str] = cfg.get("prefixes", DEFAULT_NAME_PREFIXES)
+        self.max_massage_minutes: int = cfg.get("max_massage_minutes", DEFAULT_MAX_MASSAGE_MINUTES)
         self._client: BleakClient | None = None
         self._keepalive: asyncio.Task[None] | None = None
 
@@ -212,6 +226,7 @@ class UDivaDriver:
         self._mode_cmd: bytes | None = None  # preset re-sent by the keepalive
         self._status = None
         self._status_seen.clear()
+        self._massage_started_at: float | None = None
         self.tapping = False
         self.kneading = False
         self.rolling_level = 0
@@ -240,6 +255,19 @@ class UDivaDriver:
     def connected(self) -> bool:
         return bool(self._client and self._client.is_connected)
 
+    def massage_elapsed(self) -> float | None:
+        """Seconds since the current massage was started, or None if none is
+        running as far as the driver knows."""
+        if self._massage_started_at is None:
+            return None
+        return time.monotonic() - self._massage_started_at
+
+    def _mark_massage_started(self) -> None:
+        self._massage_started_at = time.monotonic()
+
+    def _mark_massage_ended(self) -> None:
+        self._massage_started_at = None
+
     @property
     def busy(self) -> bool:
         """True while an operation is running or queued."""
@@ -259,6 +287,10 @@ class UDivaDriver:
                 last_command=s[12],
                 raw=s.hex(" "),
             )
+        elapsed = self.massage_elapsed()
+        if elapsed is not None:
+            st["massage_minutes"] = round(elapsed / 60, 1)
+            st["auto_stop_after_minutes"] = self.max_massage_minutes
         st["manual_techniques"] = {
             "tapping": self.tapping,
             "kneading": self.kneading,
@@ -468,6 +500,7 @@ class UDivaDriver:
             await self._write(POWER)
         self._powered = False
         self._reset_techniques()
+        self._mark_massage_ended()
 
     async def stop(self, timeout: float = 3.0) -> bool:
         """Stop whatever is running (any in-flight or queued operation, then
@@ -480,6 +513,7 @@ class UDivaDriver:
         self._reset_techniques()
         before = self._status_seq
         await self._write(STOP)
+        self._mark_massage_ended()
         await self._wait_for_fresh_status(before, timeout)
         return self._status_seq > before
 
@@ -643,6 +677,7 @@ class UDivaDriver:
         never ran within that many probes (already at sofa).
         """
         self._reset_techniques()
+        self._mark_massage_ended()
         self._motion_in_progress = True
         try:
             await self._write(POWER)
@@ -704,6 +739,9 @@ class UDivaDriver:
 
     # -- programs ----------------------------------------------------------
     async def _start_preset(self, name: str, timeout: float) -> bool:
+        # Clock starts on the attempt: even an unconfirmed start may leave the
+        # chair running, and the auto-stop's STOP is harmless on an idle chair.
+        self._mark_massage_started()
         await self._ensure_run_state()
         if not await self._recline():
             return False
@@ -729,6 +767,7 @@ class UDivaDriver:
         start_cmd = START_MANUAL_BY_AREA[area]
         self._mode_cmd = None
         self._reset_techniques()
+        self._mark_massage_started()
         await self._ensure_run_state()
         deadline = time.monotonic() + min(timeout, 90.0)
 
